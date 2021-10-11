@@ -1,4 +1,5 @@
-.vscode/*
+.vscode/
+secret
 
 # Local History for Visual Studio Code
 .history/

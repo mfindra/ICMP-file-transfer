@@ -9,6 +9,7 @@
 #include <netinet/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+#include <netinet/ip_icmp.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <pcap.h>
@@ -133,7 +134,23 @@ int main(int argc, char **argv) {
     string S_opt;
     bool L_opt = false;
 
+    int sock;
     int opt;
+    int on;
+    char src_name[256];
+    char send_buf[500];
+    char recv_buf[500];
+    struct ip *ip = (struct ip *)send_buf;
+    struct icmp *icmp = (struct icmp *)(ip + 1);
+    struct hostent *src_hp, *dst_hp;
+    struct sockaddr_in src, dst;
+    int dst_addr_len;
+    struct timeval t;
+    fd_set socks;
+    int failed_count = 0;
+    int bytes_sent, bytes_recv;
+    int result;
+
     while ((opt = getopt(argc, argv, "r:s:lh")) != -1) {
         switch (opt) {
             case 'r':
@@ -151,7 +168,7 @@ int main(int argc, char **argv) {
                 break;
             default:
                 fprintf(stderr, "ERROR - Wrong argument!\n");
-                return 1;
+                return EXIT_FAILURE;
         }
     }
 
@@ -176,19 +193,19 @@ int main(int argc, char **argv) {
         handler = pcap_open_live(interface.c_str(), BUFSIZ, 1, -1, errbuf);
         if (handler == NULL) {
             fprintf(stderr, "Error - pcap_open_live(): %s\n", errbuf);
-            return 1;
+            return EXIT_FAILURE;
         }
 
         // filter compilation
         if (pcap_compile(handler, &fp, filter_string.c_str(), 0, netp) == -1) {
             fprintf(stderr, "Error calling pcap_compile\n");
-            return 1;
+            return EXIT_FAILURE;
         }
 
         // set filter
         if (pcap_setfilter(handler, &fp) == -1) {
             fprintf(stderr, "Error setting filter\n");
-            return 1;
+            return EXIT_FAILURE;
         }
 
         // loop callback function
@@ -204,29 +221,138 @@ int main(int argc, char **argv) {
         // check arguments in sender mode
         if (R_opt.empty()) {
             fprintf(stderr, "ERROR - Missing file name!\n");
-            return 1;
+            return EXIT_FAILURE;
         } else if (S_opt.empty()) {
             fprintf(stderr, "ERROR - Missing IP address or hostname!\n");
-            return 1;
+            return EXIT_FAILURE;
         }
 
-        //
+        // read file into buffer
         ifstream f(R_opt.c_str());
         if (f.good()) {
             cout << "File extists" << endl;
         } else {
             fprintf(stderr, "ERROR - File not found\n");
-            return 1;
+            return EXIT_FAILURE;
         }
 
         f.close();
-    }
 
-    if (DEBUG) {
-        cout << "R_opt = " << R_opt << endl;
-        cout << "S_opt = " << S_opt << endl;
-        cout << "L_opt = " << L_opt << endl;
-    }
+        // create header for ICMP packet
+        ip->ip_v = 4;
+        ip->ip_hl = 5;
+        ip->ip_tos = 0;
+        ip->ip_len = htons(sizeof(send_buf));
+        ip->ip_id = htons(321);
+        ip->ip_off = htons(0);
+        ip->ip_ttl = 255;
+        ip->ip_p = IPPROTO_ICMP;
+        ip->ip_sum = 0;
 
-    return 0;
+        /* Get source IP address */
+        if (gethostname(src_name, sizeof(src_name)) < 0) {
+            perror("gethostname() error");
+            exit(EXIT_FAILURE);
+        } else {
+            if ((src_hp = gethostbyname(src_name)) == NULL) {
+                fprintf(stderr, "%s: Can't resolve, unknown source.\n", src_name);
+                exit(EXIT_FAILURE);
+            } else
+                ip->ip_src = (*(struct in_addr *)src_hp->h_addr);
+        }
+
+        /* Get destination IP address */
+        if ((dst_hp = gethostbyname(S_opt.c_str())) == NULL) {
+            if ((ip->ip_dst.s_addr = inet_addr(S_opt.c_str())) == -1) {
+                fprintf(stderr, "%s: Can't resolve, unknown destination.\n", S_opt.c_str());
+                exit(EXIT_FAILURE);
+            }
+        } else {
+            ip->ip_dst = (*(struct in_addr *)dst_hp->h_addr);
+            dst.sin_addr = (*(struct in_addr *)dst_hp->h_addr);
+        }
+
+        if (DEBUG) {
+            cout << inet_ntoa(ip->ip_src) << endl;
+            cout << inet_ntoa(ip->ip_dst) << endl;
+        }
+
+        // create ICMP packet
+        icmp->icmp_type = ICMP_ECHO;
+        icmp->icmp_code = 0;
+        icmp->icmp_id = 111;
+        icmp->icmp_seq = 0;
+
+        /* Create RAW socket */
+        if ((sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
+            perror("socket() error");
+            return EXIT_FAILURE;
+        }
+
+        /* Socket options, tell the kernel we provide the IP structure */
+        on = 1;
+        if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+            perror("setsockopt() for IP_HDRINCL error");
+            exit(EXIT_FAILURE);
+        }
+
+        dst.sin_family = AF_INET;
+        dst_addr_len = sizeof(dst);
+
+        t.tv_sec = 5;
+        t.tv_usec = 0;
+
+        /* Set socket listening descriptors */
+        FD_ZERO(&socks);
+        FD_SET(sock, &socks);
+
+        /* Send packet */
+        if ((bytes_sent = sendto(sock, send_buf, sizeof(send_buf), 0,
+                                 (struct sockaddr *)&dst, dst_addr_len)) < 0) {
+            perror("sendto() error");
+            failed_count++;
+            printf("Failed to send packet.\n");
+            fflush(stdout);
+        } else {
+            printf("Sent %d byte packet... ", bytes_sent);
+
+            fflush(stdout);
+
+            /* Listen for the response or timeout */
+            if ((result = select(sock + 1, &socks, NULL, NULL, &t)) < 0) {
+                perror("select() error");
+                failed_count++;
+                printf("Error receiving packet!\n");
+            } else if (result > 0) {
+                printf("Waiting for packet... ");
+                fflush(stdout);
+
+                if ((bytes_recv = recvfrom(sock, recv_buf,
+                                           sizeof(ip) + sizeof(icmp) + sizeof(recv_buf), 0,
+                                           (struct sockaddr *)&dst,
+                                           (socklen_t *)&dst_addr_len)) < 0) {
+                    perror("recvfrom() error");
+                    failed_count++;
+                    fflush(stdout);
+                } else
+                    printf("Received %d byte packet!\n", bytes_recv);
+            } else {
+                printf("Failed to receive packet!\n");
+                failed_count++;
+            }
+
+            fflush(stdout);
+
+            icmp->icmp_seq++;
+        }
+        /* close socket */
+        close(sock);
+
+        if (DEBUG) {
+            cout << "R_opt = " << R_opt << endl;
+            cout << "S_opt = " << S_opt << endl;
+            cout << "L_opt = " << L_opt << endl;
+        }
+    }
+    return EXIT_SUCCESS;
 }
