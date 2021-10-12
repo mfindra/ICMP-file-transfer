@@ -138,9 +138,9 @@ int main(int argc, char **argv) {
     int opt;
     int on;
     char src_name[256];
-    char send_buf[500];
-    char recv_buf[500];
-    struct ip *ip = (struct ip *)send_buf;
+    string send_buf;
+    char recv_buf[300];
+    struct ip *ip = (struct ip *)send_buf.c_str();
     struct icmp *icmp = (struct icmp *)(ip + 1);
     struct hostent *src_hp, *dst_hp;
     struct sockaddr_in src, dst;
@@ -238,11 +238,11 @@ int main(int argc, char **argv) {
 
         f.close();
 
-        // create header for ICMP packet
+        // create header
         ip->ip_v = 4;
         ip->ip_hl = 5;
         ip->ip_tos = 0;
-        ip->ip_len = htons(sizeof(send_buf));
+        ip->ip_len = htons(sizeof(send_buf.c_str()));
         ip->ip_id = htons(321);
         ip->ip_off = htons(0);
         ip->ip_ttl = 255;
@@ -306,8 +306,10 @@ int main(int argc, char **argv) {
         FD_ZERO(&socks);
         FD_SET(sock, &socks);
 
+        //send_buf.assign("hahahahahahahah");
+
         /* Send packet */
-        if ((bytes_sent = sendto(sock, send_buf, sizeof(send_buf), 0,
+        if ((bytes_sent = sendto(sock, send_buf.c_str(), sizeof(send_buf), 0,
                                  (struct sockaddr *)&dst, dst_addr_len)) < 0) {
             perror("sendto() error");
             failed_count++;
