@@ -21,6 +21,9 @@
 
 #include <ctime>
 #include <sstream>
+#include <vector>
+
+#define PACKET_SIZE 1500
 
 using namespace std;
 
@@ -47,7 +50,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
     struct in_addr addr_dest_tmp;
     string ip_dest_tmp = "";
 
-    //ipv6
+    // ipv6
     string ip6_dest_addr;
     string ip6_src_addr;
 
@@ -88,16 +91,14 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
         cout << " " << ip6_src_addr;
     else
         cout << " " << inet_ntoa(addr_src_tmp);
-    if (ip_src_tmp != "")
-        cout << " : " << ip_src_tmp;
+    if (ip_src_tmp != "") cout << " : " << ip_src_tmp;
 
     // print destination ip address and port
     if (ip6_dest_addr != "")
         cout << " > " << ip6_dest_addr;
     else
         cout << " > " << inet_ntoa(addr_dest_tmp);
-    if (ip_dest_tmp != "")
-        cout << " : " << ip_dest_tmp;
+    if (ip_dest_tmp != "") cout << " : " << ip_dest_tmp;
 
     // print length of recieved packet
     cout << " length " << pkthdr->len << " bytes" << endl;
@@ -265,6 +266,24 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
 
+        // read file into buffer
+        ifstream f(R_opt.c_str(), ios::binary);
+        string file_data;
+        unsigned char *buffer_vec;
+        if (f.good()) {
+            cout << "File exists" << endl;
+            // read file as byte(char) vector and covert to array
+            vector<unsigned char> buffer(istreambuf_iterator<char>(f), {});
+            buffer_vec = &buffer[0];
+            if (DEBUG)
+                cout << buffer_vec << endl;
+        } else {
+            fprintf(stderr, "ERROR - File not found\n");
+            return EXIT_FAILURE;
+        }
+
+        f.close();
+
         memset(&hints, 0, sizeof hints);
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
@@ -290,23 +309,66 @@ int main(int argc, char **argv) {
         // create socket
         cout << server_info->ai_family << server_info->ai_socktype << protocol << endl;
 
-        int sock = socket(server_info->ai_family, server_info->ai_socktype, protocol);
+        int sock = socket(server_info->ai_family, SOCK_RAW, protocol);
         if (sock == -1) {
             fprintf(stderr, "Error createing socket:  %s\n", gai_strerror(status));
             return 1;
         }
 
         /*
-        // read file into buffer
-        ifstream f(R_opt.c_str());
-        if (f.good()) {
-        cout << "File extists" << endl;
-        } else {
-        fprintf(stderr, "ERROR - File not found\n");
-        return EXIT_FAILURE;
+        // biggest packet 1500b
+        u_int8_t packet[PACKET_SIZE];
+        char data[] = "ahoj ako sa mas";
+        int datalen = sizeof(data);
+
+        memset(&packet, 0, PACKET_SIZE);
+
+        // create icmp packet
+        struct icmphdr *icmp_header = (struct icmphdr*)packet;
+        icmp_header->code = ICMP_ECHO;
+        cout << icmp_cksum((u_int16_t*)packet, datalen) << endl;
+
+        icmp_header->checksum = icmp_cksum((u_int16_t*)packet, datalen);
+
+        memcpy(packet + sizeof(struct icmphdr), data, datalen);
+
+        if (sendto(sock, packet, sizeof(struct icmphdr) + datalen, 0, (struct
+        sockaddr *)(server_info->ai_addr), server_info->ai_addrlen) < 0) {
+            fprintf(stderr, "sendto err :)\n");
+        return 1;*/
+
+        struct icmp icmpHeader;
+
+        // create ICMP header
+        icmpHeader.icmp_type = ICMP_ECHO;
+        icmpHeader.icmp_code = 0;
+        icmpHeader.icmp_cksum = 0;
+        icmpHeader.icmp_id = 69;
+        icmpHeader.icmp_seq = 0;
+
+        // fill in ICMP data
+        char data[] = "ahoj ako sa mas";
+        int dataLength = sizeof(data);
+        u_int8_t icmpBuffer[1500];
+        u_int8_t *icmpData = icmpBuffer + 8;
+
+        memcpy(icmpBuffer, &icmpHeader, 8);
+        memcpy(icmpData, data, dataLength);
+
+        icmpHeader.icmp_cksum =
+            icmp_cksum((uint16_t *)icmpBuffer, 8 + dataLength);
+        memcpy(icmpBuffer, &icmpHeader, 8);
+
+        if (sendto(sock, icmpBuffer, 8 + dataLength, 0,
+                   (struct sockaddr *)(server_info->ai_addr),
+                   server_info->ai_addrlen) <= 0) {
+            cerr << "Failed to send packet: " << strerror(errno) << endl;
+            return false;
         }
 
-        f.close();
+        cout << "Successfully sent echo request" << endl;
+
+        /*
 
         // create header
         ip->ip_v = 4;
@@ -334,8 +396,8 @@ int main(int argc, char **argv) {
         // Get destination IP address
         if ((dst_hp = gethostbyname(S_opt.c_str())) == NULL) {
         if ((ip->ip_dst.s_addr = inet_addr(S_opt.c_str())) == -1) {
-        fprintf(stderr, "%s: Can't resolve, unknown destination.\n", S_opt.c_str());
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "%s: Can't resolve, unknown destination.\n",
+        S_opt.c_str()); exit(EXIT_FAILURE);
         }
         } else {
         ip->ip_dst = (*(struct in_addr *)dst_hp->h_addr);
@@ -400,9 +462,8 @@ int main(int argc, char **argv) {
         fflush(stdout);
 
         if ((bytes_recv = recvfrom(sock, recv_buf,
-                                   sizeof(ip) + sizeof(icmp) + sizeof(recv_buf), 0,
-                                   (struct sockaddr *)&dst,
-                                   (socklen_t *)&dst_addr_len)) < 0) {
+                                   sizeof(ip) + sizeof(icmp) + sizeof(recv_buf),
+        0, (struct sockaddr *)&dst, (socklen_t *)&dst_addr_len)) < 0) {
             perror("recvfrom() error");
             failed_count++;
             fflush(stdout);
