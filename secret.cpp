@@ -1,3 +1,4 @@
+#include <openssl/aes.h>
 #include <unistd.h>
 
 #include <fstream>
@@ -5,7 +6,11 @@
 #include <string>
 
 // network libs
+#include <arpa/inet.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
+#include <netdb.h>
+#include <netinet/ether.h>
 #include <netinet/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
@@ -132,9 +137,9 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
 void *get_in_addr(struct sockaddr *sa) {
     if (sa->sa_family == AF_INET) {
         return &(((struct sockaddr_in *)sa)->sin_addr);
-    } else if (sa->sa_family == AF_INET6) {
-        return &(((struct sockaddr_in6 *)sa)->sin6_addr);
     }
+
+    return &(((struct sockaddr_in6 *)sa)->sin6_addr);
 }
 
 u_int16_t icmp_cksum(uint16_t *buffer, int length) {
@@ -253,10 +258,6 @@ int main(int argc, char **argv) {
 
         return 0;
     } else {
-        struct addrinfo hints, *server_info, *p;
-        int status, protocol;
-        char ip_string[INET6_ADDRSTRLEN];
-
         // check arguments in sender mode
         if (R_opt.empty()) {
             fprintf(stderr, "ERROR - Missing file name!\n");
@@ -267,24 +268,29 @@ int main(int argc, char **argv) {
         }
 
         // read file into buffer
-        ifstream f(R_opt.c_str(), ios::binary);
-        string file_data;
-        unsigned char *buffer_vec;
+        ifstream f(R_opt.c_str());
+        stringstream file_data;
+        int file_data_len;
+
         if (f.good()) {
-            cout << "File exists" << endl;
-            // read file as byte(char) vector and covert to array
-            vector<unsigned char> buffer(istreambuf_iterator<char>(f), {});
-            buffer_vec = &buffer[0];
             if (DEBUG)
-                cout << buffer_vec << endl;
+                cout << "File exists" << endl;
+            file_data << f.rdbuf();
+            file_data_len = file_data.tellp();
+            if (DEBUG)
+                cout << file_data_len << endl;
         } else {
             fprintf(stderr, "ERROR - File not found\n");
             return EXIT_FAILURE;
         }
-
         f.close();
 
-        memset(&hints, 0, sizeof hints);
+        // set sender and reciever info
+        struct addrinfo hints, *server_info;
+        int status, protocol;
+        char ip_string[INET6_ADDRSTRLEN];
+
+        memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
 
@@ -307,179 +313,72 @@ int main(int argc, char **argv) {
             protocol = IPPROTO_ICMPV6;
 
         // create socket
-        cout << server_info->ai_family << server_info->ai_socktype << protocol << endl;
-
-        int sock = socket(server_info->ai_family, SOCK_RAW, protocol);
-        if (sock == -1) {
-            fprintf(stderr, "Error createing socket:  %s\n", gai_strerror(status));
+        int sock;
+        if ((sock = socket(server_info->ai_family, SOCK_RAW, protocol)) < 0) {
+            fprintf(stderr, "Error creating socket:  %s\n", gai_strerror(status));
             return 1;
         }
 
-        /*
-        // biggest packet 1500b
-        u_int8_t packet[PACKET_SIZE];
-        char data[] = "ahoj ako sa mas";
-        int datalen = sizeof(data);
+        uint8_t ttl = 255;
+        if (setsockopt(sock, SOL_IP, IP_TTL, &ttl, sizeof(ttl)) != 0) {
+            cerr << "Failed to set TTL option" << endl;
+            return false;
+        }
 
-        memset(&packet, 0, PACKET_SIZE);
+        if (fcntl(sock, F_SETFL, O_NONBLOCK) != 0) {
+            cerr << "Failed to set non-blocking" << endl;
+            return false;
+        }
 
-        // create icmp packet
-        struct icmphdr *icmp_header = (struct icmphdr*)packet;
-        icmp_header->code = ICMP_ECHO;
-        cout << icmp_cksum((u_int16_t*)packet, datalen) << endl;
+        AES_KEY key_e;
+        AES_KEY key_d;
+        AES_set_encrypt_key((const unsigned char *)"xlogin00", 256, &key_e);
+        AES_set_decrypt_key((const unsigned char *)"xlogin00", 256, &key_d);
 
-        icmp_header->checksum = icmp_cksum((u_int16_t*)packet, datalen);
+        unsigned char *output = (unsigned char *)calloc(file_data_len + (AES_BLOCK_SIZE % file_data_len), 1);
 
-        memcpy(packet + sizeof(struct icmphdr), data, datalen);
+        AES_encrypt((const unsigned char *)file_data.str().c_str(), output, &key_e);
 
-        if (sendto(sock, packet, sizeof(struct icmphdr) + datalen, 0, (struct
-        sockaddr *)(server_info->ai_addr), server_info->ai_addrlen) < 0) {
-            fprintf(stderr, "sendto err :)\n");
-        return 1;*/
+        printf("encrypted: ");
+        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
+            printf("%X ", output[i]);
+        }
+        printf("\n");
 
-        struct icmp icmpHeader;
+        AES_decrypt(output, output, &key_d);
 
-        // create ICMP header
-        icmpHeader.icmp_type = ICMP_ECHO;
-        icmpHeader.icmp_code = 0;
-        icmpHeader.icmp_cksum = 0;
-        icmpHeader.icmp_id = 69;
-        icmpHeader.icmp_seq = 0;
+        printf("decrypted: %s, len: %ld\n", output, sizeof(output));
 
-        // fill in ICMP data
-        char data[] = "ahoj ako sa mas";
-        int dataLength = sizeof(data);
+        // create and intialize ICMP packet header
+        struct icmp icmp_hdr;
+        icmp_hdr.icmp_type = ICMP_ECHO;
+        icmp_hdr.icmp_code = 0;
+        icmp_hdr.icmp_cksum = 0;
+        icmp_hdr.icmp_id = 69;
+        icmp_hdr.icmp_seq = 0;
+
+        // concat data to ICMP header
         u_int8_t icmpBuffer[1500];
         u_int8_t *icmpData = icmpBuffer + 8;
 
-        memcpy(icmpBuffer, &icmpHeader, 8);
-        memcpy(icmpData, data, dataLength);
+        // set ICMP header and set data after header
+        memcpy(icmpBuffer, &icmp_hdr, 8);
+        memcpy(icmpData, file_data.str().c_str(), file_data_len);
 
-        icmpHeader.icmp_cksum =
-            icmp_cksum((uint16_t *)icmpBuffer, 8 + dataLength);
-        memcpy(icmpBuffer, &icmpHeader, 8);
+        // calculate new checksum with appended data and set new header
+        icmp_hdr.icmp_cksum = icmp_cksum((uint16_t *)icmpBuffer, 8 + file_data_len);
+        memcpy(icmpBuffer, &icmp_hdr, 8);
 
-        if (sendto(sock, icmpBuffer, 8 + dataLength, 0,
-                   (struct sockaddr *)(server_info->ai_addr),
-                   server_info->ai_addrlen) <= 0) {
+        // send ICMP ECHO packet to selected ip address
+        if (sendto(sock, icmpBuffer, 8 + file_data_len, 0, (struct sockaddr *)(server_info->ai_addr), server_info->ai_addrlen) <= 0) {
             cerr << "Failed to send packet: " << strerror(errno) << endl;
             return false;
         }
 
-        cout << "Successfully sent echo request" << endl;
+        if (DEBUG)
+            cout << "Successfully sent echo request" << endl;
 
-        /*
-
-        // create header
-        ip->ip_v = 4;
-        ip->ip_hl = 5;
-        ip->ip_tos = 0;
-        ip->ip_len = htons(sizeof(send_buf.c_str()));
-        ip->ip_id = htons(321);
-        ip->ip_off = htons(0);
-        ip->ip_ttl = 255;
-        ip->ip_p = IPPROTO_ICMP;
-        ip->ip_sum = 0;
-
-        // Get source IP address
-        if (gethostname(src_name, sizeof(src_name)) < 0) {
-        perror("gethostname() error");
-        exit(EXIT_FAILURE);
-        } else {
-        if ((src_hp = gethostbyname(src_name)) == NULL) {
-        fprintf(stderr, "%s: Can't resolve, unknown source.\n", src_name);
-        exit(EXIT_FAILURE);
-        } else
-        ip->ip_src = (*(struct in_addr *)src_hp->h_addr);
-        }
-
-        // Get destination IP address
-        if ((dst_hp = gethostbyname(S_opt.c_str())) == NULL) {
-        if ((ip->ip_dst.s_addr = inet_addr(S_opt.c_str())) == -1) {
-        fprintf(stderr, "%s: Can't resolve, unknown destination.\n",
-        S_opt.c_str()); exit(EXIT_FAILURE);
-        }
-        } else {
-        ip->ip_dst = (*(struct in_addr *)dst_hp->h_addr);
-        dst.sin_addr = (*(struct in_addr *)dst_hp->h_addr);
-        }
-
-        if (DEBUG) {
-        cout << inet_ntoa(ip->ip_src) << endl;
-        cout << inet_ntoa(ip->ip_dst) << endl;
-        }
-
-        // create ICMP packet
-        icmp->icmp_type = ICMP_ECHO;
-        icmp->icmp_code = 0;
-        icmp->icmp_id = 111;
-        icmp->icmp_seq = 0;
-
-        // Create RAW socket
-        if ((sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
-        perror("socket() error");
-        return EXIT_FAILURE;
-        }
-
-        // Socket options, tell the kernel we provide the IP structure
-        on = 1;
-        if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
-        perror("setsockopt() for IP_HDRINCL error");
-        exit(EXIT_FAILURE);
-        }
-
-        dst.sin_family = AF_INET;
-        dst_addr_len = sizeof(dst);
-
-        t.tv_sec = 5;
-        t.tv_usec = 0;
-
-        // Set socket listening descriptors
-        FD_ZERO(&socks);
-        FD_SET(sock, &socks);
-
-        //send_buf.assign("hahahahahahahah");
-
-        // Send packet
-        if ((bytes_sent = sendto(sock, send_buf.c_str(), sizeof(send_buf), 0,
-                         (struct sockaddr *)&dst, dst_addr_len)) < 0) {
-        perror("sendto() error");
-        failed_count++;
-        printf("Failed to send packet.\n");
-        fflush(stdout);
-        } else {
-        printf("Sent %d byte packet... ", bytes_sent);
-
-        fflush(stdout);
-
-        // Listen for the response or timeout
-        if ((result = select(sock + 1, &socks, NULL, NULL, &t)) < 0) {
-        perror("select() error");
-        failed_count++;
-        printf("Error receiving packet!\n");
-        } else if (result > 0) {
-        printf("Waiting for packet... ");
-        fflush(stdout);
-
-        if ((bytes_recv = recvfrom(sock, recv_buf,
-                                   sizeof(ip) + sizeof(icmp) + sizeof(recv_buf),
-        0, (struct sockaddr *)&dst, (socklen_t *)&dst_addr_len)) < 0) {
-            perror("recvfrom() error");
-            failed_count++;
-            fflush(stdout);
-        } else
-            printf("Received %d byte packet!\n", bytes_recv);
-        } else {
-        printf("Failed to receive packet!\n");
-        failed_count++;
-        }
-
-        fflush(stdout);
-
-        icmp->icmp_seq++;
-        }
-        //close socket
-        close(sock);*/
+        close(sock);
 
         if (DEBUG) {
             cout << "R_opt = " << R_opt << endl;
@@ -489,3 +388,6 @@ int main(int argc, char **argv) {
     }
     return EXIT_SUCCESS;
 }
+
+// ahoj ahooj ahoooooooooooooooo
+// ahoj ahooj ahoooj

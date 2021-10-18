@@ -1,9 +1,9 @@
 NAME= secret
 CC= g++
-FLAGS= -std=c++11 -pedantic 
+FLAGS= -std=c++11 -lpcap -lssl -lcrypto -pedantic
 
 all:
-	$(CC) $(FLAGS) $(NAME).cpp -o $(NAME) -lpcap
+	$(CC) $(NAME).cpp -o $(NAME) $(FLAGS)  
 
 clean:
 	rm $(NAME) 
