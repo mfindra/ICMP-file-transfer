@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
 
@@ -29,6 +30,7 @@
 #include <vector>
 
 #define PACKET_SIZE 1500
+#define DEBUG 1
 
 using namespace std;
 
@@ -166,8 +168,62 @@ u_int16_t icmp_cksum(uint16_t *buffer, int length) {
     return answer;
 }
 
+unsigned char *encrypt_message(string _message, int _message_len) {
+    AES_KEY encrypt_key;
+    AES_set_encrypt_key((const unsigned char *)"xfindr00", 128, &encrypt_key);
+
+    unsigned char *output = (unsigned char *)calloc(_message_len + (AES_BLOCK_SIZE % _message_len), 1);
+
+    AES_encrypt((unsigned char *)_message.c_str(), output, &encrypt_key);
+
+    cout << "string has been encrypted" << endl;
+
+    return output;
+}
+
+char *decrypt_message(unsigned char *_message) {
+    AES_KEY decrypt_key;
+    AES_set_decrypt_key((unsigned char *)"xfindr00", 128, &decrypt_key);
+    AES_decrypt((unsigned char *)_message, (unsigned char *)_message, &decrypt_key);
+
+    printf("decrypted string: %s\n", _message);
+    return (char *)_message;
+}
+
+int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_data_len, int _sock, int _id) {
+    // create and intialize ICMP packet header
+    struct icmp icmp_hdr;
+    icmp_hdr.icmp_type = ICMP_ECHO;
+    icmp_hdr.icmp_code = 0;
+    icmp_hdr.icmp_cksum = 0;
+    icmp_hdr.icmp_id = _id;
+    icmp_hdr.icmp_seq = 0;
+
+    // concat data to ICMP header
+    u_int8_t icmpBuffer[1500];
+    u_int8_t *icmpData = icmpBuffer + 8;
+
+    // set ICMP header and set data after header
+    memcpy(icmpBuffer, &icmp_hdr, 8);
+    memcpy(icmpData, _file_data, _file_data_len);
+
+    // calculate new checksum with appended data and set new header
+    icmp_hdr.icmp_cksum = icmp_cksum((uint16_t *)icmpBuffer, 8 + _file_data_len);
+    memcpy(icmpBuffer, &icmp_hdr, 8);
+
+    // send ICMP ECHO packet to selected ip address
+    if (sendto(_sock, icmpBuffer, 8 + _file_data_len, 0, (struct sockaddr *)(_server_info->ai_addr), _server_info->ai_addrlen) <= 0) {
+        cerr << "Failed to send packet: " << strerror(errno) << endl;
+        return false;
+    }
+
+    if (DEBUG)
+        cout << "Successfully sent echo request" << endl;
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    int DEBUG = 1;
     string R_opt;
     string S_opt;
     bool L_opt = false;
@@ -285,8 +341,15 @@ int main(int argc, char **argv) {
         }
         f.close();
 
+        /*
+        char ssss[6];
+        file_data.read(ssss, 6);
+        cout << ssss << endl;
+        */
+
         // set sender and reciever info
-        struct addrinfo hints, *server_info;
+        struct addrinfo hints,
+            *server_info;
         int status, protocol;
         char ip_string[INET6_ADDRSTRLEN];
 
@@ -330,62 +393,30 @@ int main(int argc, char **argv) {
             return false;
         }
 
-        AES_KEY key_e;
-        AES_KEY key_d;
-        AES_set_encrypt_key((const unsigned char *)"xlogin00", 256, &key_e);
-        AES_set_decrypt_key((const unsigned char *)"xlogin00", 256, &key_d);
-
-        unsigned char *output = (unsigned char *)calloc(file_data_len + (AES_BLOCK_SIZE % file_data_len), 1);
-
-        AES_encrypt((const unsigned char *)file_data.str().c_str(), output, &key_e);
-
-        printf("encrypted: ");
-        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            printf("%X ", output[i]);
-        }
-        printf("\n");
-
-        AES_decrypt(output, output, &key_d);
-
-        printf("decrypted: %s, len: %ld\n", output, sizeof(output));
-
-        // create and intialize ICMP packet header
-        struct icmp icmp_hdr;
-        icmp_hdr.icmp_type = ICMP_ECHO;
-        icmp_hdr.icmp_code = 0;
-        icmp_hdr.icmp_cksum = 0;
-        icmp_hdr.icmp_id = 69;
-        icmp_hdr.icmp_seq = 0;
-
-        // concat data to ICMP header
-        u_int8_t icmpBuffer[1500];
-        u_int8_t *icmpData = icmpBuffer + 8;
-
-        // set ICMP header and set data after header
-        memcpy(icmpBuffer, &icmp_hdr, 8);
-        memcpy(icmpData, file_data.str().c_str(), file_data_len);
-
-        // calculate new checksum with appended data and set new header
-        icmp_hdr.icmp_cksum = icmp_cksum((uint16_t *)icmpBuffer, 8 + file_data_len);
-        memcpy(icmpBuffer, &icmp_hdr, 8);
-
-        // send ICMP ECHO packet to selected ip address
-        if (sendto(sock, icmpBuffer, 8 + file_data_len, 0, (struct sockaddr *)(server_info->ai_addr), server_info->ai_addrlen) <= 0) {
-            cerr << "Failed to send packet: " << strerror(errno) << endl;
-            return false;
+        if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 69)) {
+            cerr << "failed" << endl;
         }
 
-        if (DEBUG)
-            cout << "Successfully sent echo request" << endl;
+        cout << R_opt.c_str() << endl;
 
-        close(sock);
+        // send file name
+        if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), sizeof(R_opt.c_str()), sock, 69)) {
+            cerr << "failed" << endl;
+        }
+
+        string tmp = "michal findra";
+        unsigned char *tmpp;
+        tmpp = encrypt_message(tmp, tmp.length());
+        decrypt_message(tmpp);
 
         if (DEBUG) {
             cout << "R_opt = " << R_opt << endl;
             cout << "S_opt = " << S_opt << endl;
             cout << "L_opt = " << L_opt << endl;
         }
+        close(sock);
     }
+
     return EXIT_SUCCESS;
 }
 
