@@ -133,6 +133,14 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
         }
     }
     cout << endl;
+
+    for (int i = 42; i < pkthdr->caplen; i++) {
+        if (isprint(packet[i]))      /* Check if the packet data is printable */
+            printf("%c", packet[i]); /* Print it */
+        else
+            printf(" . ", packet[i]); /* If not print a . */
+    }
+    cout << endl;
 }
 
 // return struct with IPv4 or IPv6 address stats
@@ -228,24 +236,6 @@ int main(int argc, char **argv) {
     string S_opt;
     bool L_opt = false;
     int opt;
-
-    /*
-    int sock;
-    int on;
-    char src_name[256];
-    string send_buf;
-    char recv_buf[300];
-    struct ip *ip = (struct ip *)send_buf.c_str();
-    struct icmp *icmp = (struct icmp *)(ip + 1);
-    struct hostent *src_hp, *dst_hp;
-    struct sockaddr_in src, dst;
-    int dst_addr_len;
-    struct timeval t;
-    fd_set socks;
-    int failed_count = 0;
-    int bytes_sent, bytes_recv;
-    int result;
-    */
 
     while ((opt = getopt(argc, argv, "r:s:lh")) != -1) {
         switch (opt) {
@@ -393,15 +383,45 @@ int main(int argc, char **argv) {
             return false;
         }
 
-        if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 69)) {
+        // send file name
+        if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), R_opt.length(), sock, 69)) {
             cerr << "failed" << endl;
         }
 
-        cout << R_opt.c_str() << endl;
+        // send packet data
+        if (file_data.str().length() > 1500) {
+            if (DEBUG) {
+                cout << "File size greater than one packet" << endl;
+                cout << file_data.str().length() << endl;
+            }
+            int tmp_size = 1000;
+            int tmp_start = 0;
+            int data_len = file_data.str().length();
+            while (tmp_start < data_len) {
+                if ((tmp_start + 1000) > data_len) {
+                    tmp_size = data_len - tmp_start;
+                    cout << "start: " << tmp_start << endl
+                         << "size: " << tmp_size << endl
+                         << endl;
+                    if (send_custom_icmp_packet(server_info, (char *)file_data.str().substr(tmp_start, tmp_size).c_str(), file_data.str().substr(tmp_start, tmp_size).length(), sock, 69)) {
+                        cerr << "failed" << endl;
+                    }
+                    break;
+                } else {
+                    cout << "start: " << tmp_start << endl
+                         << "size: " << tmp_size << endl
+                         << endl;
+                    if (send_custom_icmp_packet(server_info, (char *)file_data.str().substr(tmp_start, tmp_size).c_str(), file_data.str().substr(tmp_start, tmp_size).length(), sock, 69)) {
+                        cerr << "failed" << endl;
+                    }
+                    tmp_start += tmp_size;
+                }
+            }
 
-        // send file name
-        if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), sizeof(R_opt.c_str()), sock, 69)) {
-            cerr << "failed" << endl;
+        } else {
+            if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 69)) {
+                cerr << "failed" << endl;
+            }
         }
 
         string tmp = "michal findra";
