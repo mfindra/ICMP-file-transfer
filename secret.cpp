@@ -125,24 +125,20 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
     cout << " length " << pkthdr->len << " bytes" << endl;
 
     for (int i = 42; i < pkthdr->caplen; i++) {
-        if (isprint(packet[i])) {
-            /* Check if the packet data is printable */
-            //printf("%c", packet[i]); /* Print it */
-            packet_data.push_back(packet[i]);
-        } else
-            printf(" ##### ", packet[i]); /* If not print a . */
+        /* Check if the packet data is printable */
+        // printf("%c", packet[i]); /* Print it */
+        packet_data.push_back(packet[i]);
     }
 
     string file_name_tmp = packet_data.substr(0, file_name_len);
 
     if (packet_id == 69) {
-        //packet_data.append("tmppp");
         ofstream outfile(packet_data.append(".out"));
         outfile.close();
     } else if (packet_id = 71) {
         ofstream outfile;
         outfile.open(file_name_tmp.append(".out"), std::ios_base::app);  // append instead of overwrite
-        outfile << packet_data.erase(0, file_name_len);
+        outfile << packet_data.substr(file_name_len, packet_data.length());
         outfile.close();
     }
 }
@@ -299,7 +295,7 @@ int main(int argc, char **argv) {
         }
 
         // loop callback function
-        pcap_loop(handler, 10, callback_handler, NULL);
+        pcap_loop(handler, 0, callback_handler, NULL);
 
         // memory cleanup
         pcap_freecode(&fp);
@@ -335,15 +331,8 @@ int main(int argc, char **argv) {
         }
         f.close();
 
-        /*
-        char ssss[6];
-        file_data.read(ssss, 6);
-        cout << ssss << endl;
-        */
-
         // set sender and reciever info
-        struct addrinfo hints,
-            *server_info;
+        struct addrinfo hints, *server_info;
         int status, protocol;
         char ip_string[INET6_ADDRSTRLEN];
 
@@ -407,7 +396,8 @@ int main(int argc, char **argv) {
                     cout << "start: " << tmp_start << endl
                          << "size: " << tmp_size << endl
                          << endl;
-                    if (send_custom_icmp_packet(server_info, (char *)(file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).c_str(), (file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).length(), sock, 71, R_opt.length())) {
+                    string tmp = R_opt + file_data.str().substr(tmp_start, tmp_size);
+                    if (send_custom_icmp_packet(server_info, (char *)tmp.c_str(), tmp.length(), sock, 71, R_opt.length())) {
                         cerr << "failed" << endl;
                     }
                     break;
@@ -415,8 +405,8 @@ int main(int argc, char **argv) {
                     cout << "start: " << tmp_start << endl
                          << "size: " << tmp_size << endl
                          << endl;
-
-                    if (send_custom_icmp_packet(server_info, (char *)(file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).c_str(), (file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).length(), sock, 71, R_opt.length())) {
+                    string tmp = R_opt + file_data.str().substr(tmp_start, tmp_size);
+                    if (send_custom_icmp_packet(server_info, (char *)tmp.c_str(), tmp.length(), sock, 71, R_opt.length())) {
                         cerr << "failed" << endl;
                     }
                     tmp_start += tmp_size;

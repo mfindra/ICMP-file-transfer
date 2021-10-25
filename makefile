@@ -6,4 +6,5 @@ all:
 	$(CC) $(NAME).cpp -o $(NAME) $(FLAGS)  
 
 clean:
-	rm $(NAME) 
+	rm $(NAME)
+	rm *.out
