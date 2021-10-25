@@ -65,6 +65,10 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
     ether_header *eth_header = (ether_header *)packet;
     u_short ethertype = htons(eth_header->ether_type);
 
+    int packet_id = 0;
+    int file_name_len = 0;
+    string packet_data;
+
     // process ether type
     switch (ethertype) {
         // process IPv4 packet
@@ -77,7 +81,17 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
             addr_src_tmp.s_addr = ip_header->saddr;
             addr_dest_tmp.s_addr = ip_header->daddr;
 
-            // protocol switch (UDP, TCP, ICMP)
+            const struct icmphdr *icmp_header =
+                (struct icmphdr *)(packet + sizeof(struct ethhdr) + sizeof(struct iphdr));
+
+            if (DEBUG) {
+                cout << "id is: " << icmp_header->un.echo.id << endl;
+                cout << "file name length is: " << icmp_header->un.echo.sequence << endl
+                     << endl;
+            }
+            packet_id = icmp_header->un.echo.id;
+            file_name_len = icmp_header->un.echo.sequence;
+
             switch (ip_header->protocol) {
                 case IPPROTO_ICMP: {
                     // save source and destination port
@@ -110,37 +124,27 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
     // print length of recieved packet
     cout << " length " << pkthdr->len << " bytes" << endl;
 
-    // print packet data
-    for (unsigned int i = 0; i < pkthdr->caplen; i++) {
-        if (i % 16 == 0) {
-            cout << "  " << ss.str();
-            ss = stringstream();
-            printf("\n0x%04x: ", i);
-        }
-        printf("%x%x ", (packet[i] >> 4) & 15, packet[i] & 15);
-
-        // print character if possible else "."
-        if (isprint(packet[i])) {
-            ss << packet[i];
-        } else {
-            ss << ".";
-        }
-
-        // align last row
-        if (i == pkthdr->caplen - 1) {
-            printf("%*c", (16 - i % 16) * 3 - 2, ' ');
-            cout << " " << ss.str() << flush;
-        }
-    }
-    cout << endl;
-
     for (int i = 42; i < pkthdr->caplen; i++) {
-        if (isprint(packet[i]))      /* Check if the packet data is printable */
-            printf("%c", packet[i]); /* Print it */
-        else
-            printf(" . ", packet[i]); /* If not print a . */
+        if (isprint(packet[i])) {
+            /* Check if the packet data is printable */
+            //printf("%c", packet[i]); /* Print it */
+            packet_data.push_back(packet[i]);
+        } else
+            printf(" ##### ", packet[i]); /* If not print a . */
     }
-    cout << endl;
+
+    string file_name_tmp = packet_data.substr(0, file_name_len);
+
+    if (packet_id == 69) {
+        //packet_data.append("tmppp");
+        ofstream outfile(packet_data.append(".out"));
+        outfile.close();
+    } else if (packet_id = 71) {
+        ofstream outfile;
+        outfile.open(file_name_tmp.append(".out"), std::ios_base::app);  // append instead of overwrite
+        outfile << packet_data.erase(0, file_name_len);
+        outfile.close();
+    }
 }
 
 // return struct with IPv4 or IPv6 address stats
@@ -198,14 +202,14 @@ char *decrypt_message(unsigned char *_message) {
     return (char *)_message;
 }
 
-int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_data_len, int _sock, int _id) {
+int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_data_len, int _sock, int _id, int _name_len) {
     // create and intialize ICMP packet header
     struct icmp icmp_hdr;
     icmp_hdr.icmp_type = ICMP_ECHO;
     icmp_hdr.icmp_code = 0;
     icmp_hdr.icmp_cksum = 0;
     icmp_hdr.icmp_id = _id;
-    icmp_hdr.icmp_seq = 0;
+    icmp_hdr.icmp_seq = _name_len;
 
     // concat data to ICMP header
     u_int8_t icmpBuffer[1500];
@@ -262,7 +266,7 @@ int main(int argc, char **argv) {
     if (L_opt) {
         cout << "Listen mode" << endl;
 
-        string filter_string = "icmp or icmp6";
+        string filter_string = "icmp[icmptype] == icmp-echo";
 
         char errbuf[PCAP_ERRBUF_SIZE];
 
@@ -295,7 +299,7 @@ int main(int argc, char **argv) {
         }
 
         // loop callback function
-        pcap_loop(handler, 1, callback_handler, NULL);
+        pcap_loop(handler, 10, callback_handler, NULL);
 
         // memory cleanup
         pcap_freecode(&fp);
@@ -384,7 +388,7 @@ int main(int argc, char **argv) {
         }
 
         // send file name
-        if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), R_opt.length(), sock, 69)) {
+        if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), R_opt.length(), sock, 69, 0)) {
             cerr << "failed" << endl;
         }
 
@@ -403,7 +407,7 @@ int main(int argc, char **argv) {
                     cout << "start: " << tmp_start << endl
                          << "size: " << tmp_size << endl
                          << endl;
-                    if (send_custom_icmp_packet(server_info, (char *)file_data.str().substr(tmp_start, tmp_size).c_str(), file_data.str().substr(tmp_start, tmp_size).length(), sock, 69)) {
+                    if (send_custom_icmp_packet(server_info, (char *)(file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).c_str(), (file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).length(), sock, 71, R_opt.length())) {
                         cerr << "failed" << endl;
                     }
                     break;
@@ -411,7 +415,8 @@ int main(int argc, char **argv) {
                     cout << "start: " << tmp_start << endl
                          << "size: " << tmp_size << endl
                          << endl;
-                    if (send_custom_icmp_packet(server_info, (char *)file_data.str().substr(tmp_start, tmp_size).c_str(), file_data.str().substr(tmp_start, tmp_size).length(), sock, 69)) {
+
+                    if (send_custom_icmp_packet(server_info, (char *)(file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).c_str(), (file_data.str().insert(tmp_start, R_opt)).substr(tmp_start, tmp_size).length(), sock, 71, R_opt.length())) {
                         cerr << "failed" << endl;
                     }
                     tmp_start += tmp_size;
@@ -419,7 +424,7 @@ int main(int argc, char **argv) {
             }
 
         } else {
-            if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 69)) {
+            if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 71, R_opt.length())) {
                 cerr << "failed" << endl;
             }
         }
