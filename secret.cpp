@@ -376,11 +376,33 @@ int main(int argc, char **argv) {
             return false;
         }
 
+        stringstream encrypteddd;
+        stringstream decrypteddd;
+        int counter = 0;
+
+        while (counter * 16 < file_data.str().length()) {
+            unsigned char *file_data_encrypted;
+            file_data_encrypted = encrypt_message(file_data.str().substr(counter * 16, 16), (file_data.str().substr(counter * 16, 16)).length());
+            encrypteddd << file_data_encrypted;
+            decrypt_message(file_data_encrypted);
+            counter++;
+        }
+        counter = 0;
+
+        while (counter * 16 < encrypteddd.str().length()) {
+            string tp = encrypteddd.str().substr(counter * 16, 16);
+            unsigned char *val = new unsigned char[tp.length() + 1];
+            strcpy((char *)val, tp.c_str());
+            cout << decrypt_message(val) << endl;
+            counter++;
+        }
+
         // send file name
         if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), R_opt.length(), sock, 69, 0)) {
             cerr << "failed" << endl;
         }
 
+        /*
         // send packet data
         if (file_data.str().length() > 1500) {
             if (DEBUG) {
@@ -412,17 +434,11 @@ int main(int argc, char **argv) {
                     tmp_start += tmp_size;
                 }
             }
-
         } else {
             if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 71, R_opt.length())) {
                 cerr << "failed" << endl;
             }
-        }
-
-        string tmp = "michal findra";
-        unsigned char *tmpp;
-        tmpp = encrypt_message(tmp, tmp.length());
-        decrypt_message(tmpp);
+        }*/
 
         if (DEBUG) {
             cout << "R_opt = " << R_opt << endl;
