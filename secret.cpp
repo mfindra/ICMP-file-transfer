@@ -29,8 +29,9 @@
 #include <sstream>
 #include <vector>
 
-#define PACKET_SIZE 1500
+#define PACKET_SIZE 1400
 #define DEBUG 1
+#define KEY_LENGTH 128
 
 using namespace std;
 
@@ -45,6 +46,36 @@ void PrintHelp() {
     cout << "                              messages and stores them in current directory" << endl;
     cout << endl;
     cout << "Example usage: " << endl;
+}
+
+char *decrypt_message(char *_message, int _message_len) {
+    AES_KEY decrypt_key;
+    AES_set_decrypt_key((const unsigned char *)"xfindr00", 128, &decrypt_key);
+
+    unsigned char *output = (unsigned char *)calloc(_message_len, 1);
+
+    for (int i = 0; i < _message_len; i += 16) {
+        AES_decrypt((const unsigned char *)_message + i, output + i, &decrypt_key);
+    }
+
+    cout << "string has been decrypted" << endl;
+
+    return (char *)output;
+}
+
+char *encrypt_message(char *_message, int _message_len) {
+    AES_KEY encrypt_key;
+    AES_set_encrypt_key((const unsigned char *)"xfindr00", 128, &encrypt_key);
+
+    unsigned char *output = (unsigned char *)calloc(_message_len, 1);
+
+    for (size_t i = 0; i < _message_len; i += 16) {
+        AES_encrypt((const unsigned char *)_message + i, output + i, &encrypt_key);
+    }
+
+    cout << "string has been encrypted" << endl;
+
+    return (char *)output;
 }
 
 void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
@@ -69,6 +100,8 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
     int file_name_len = 0;
     string packet_data;
 
+    int ll;
+
     // process ether type
     switch (ethertype) {
         // process IPv4 packet
@@ -76,6 +109,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
             // get packet header
             const struct iphdr *ip_header =
                 (struct iphdr *)(packet + sizeof(struct ethhdr));
+            ll = ip_header->ihl << 2;
 
             // save source and destination ip adress
             addr_src_tmp.s_addr = ip_header->saddr;
@@ -130,17 +164,27 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
         packet_data.push_back(packet[i]);
     }
 
-    string file_name_tmp = packet_data.substr(0, file_name_len);
+    cout << "packet id: " << packet_id << endl;
+    cout << "packet data size: " << packet_data.length() << endl;
+    char *tmpp;
+    tmpp = decrypt_message((char *)packet + ETH_HLEN + ll + sizeof(struct icmphdr), packet_data.length());
+    //printf("%s\n", tmpp);
 
-    if (packet_id == 69) {
-        ofstream outfile(packet_data.append(".out"));
-        outfile.close();
-    } else if (packet_id = 71) {
-        ofstream outfile;
-        outfile.open(file_name_tmp.append(".out"), std::ios_base::app);  // append instead of overwrite
-        outfile << packet_data.substr(file_name_len, packet_data.length());
-        outfile.close();
+    string file_name_tmp(tmpp);
+    string file_data_tmp(tmpp);
+    file_data_tmp = file_name_tmp.substr(file_name_len, packet_id);
+    cout << file_data_tmp << endl;
+    file_name_tmp = file_name_tmp.substr(0, file_name_len);
+
+    if (0) {
+        cout << "file name: " << file_name_tmp << endl;
+        cout << "packet data: " << file_data_tmp << endl;
     }
+
+    ofstream outfile;
+    outfile.open(file_name_tmp.append(".out"), std::ios_base::app);  // append instead of overwrite
+    outfile << file_data_tmp;
+    outfile.close();
 }
 
 // return struct with IPv4 or IPv6 address stats
@@ -176,44 +220,49 @@ u_int16_t icmp_cksum(uint16_t *buffer, int length) {
     return answer;
 }
 
-unsigned char *encrypt_message(string _message, int _message_len) {
-    AES_KEY encrypt_key;
-    AES_set_encrypt_key((const unsigned char *)"xfindr00", 128, &encrypt_key);
+/*
+unsigned char *encrypt_message_2(string _message, int _message_len) {
+    // set encription init vector
+    char *tmpp = "ahojahojahojaho";
+    unsigned char encrypt_iv[AES_BLOCK_SIZE];
+    memcpy(encrypt_iv, tmpp, AES_BLOCK_SIZE);
 
-    unsigned char *output = (unsigned char *)calloc(_message_len + (AES_BLOCK_SIZE % _message_len), 1);
+    // buffers for encryption
+    unsigned char encrypt_out[_message_len + 1];
+    memset(encrypt_out, 0, sizeof(encrypt_out));
 
-    AES_encrypt((unsigned char *)_message.c_str(), output, &encrypt_key);
+    char h[_message_len + 1];
+    strcpy(h, _message.c_str());
 
-    cout << "string has been encrypted" << endl;
+    AES_KEY enc_key;
+    AES_set_encrypt_key((const unsigned char *)"xfindr00", KEY_LENGTH, &enc_key);
+    AES_cbc_encrypt((unsigned char *)&h, encrypt_out, _message_len, &enc_key, encrypt_iv, AES_ENCRYPT);
 
-    return output;
+    return encrypt_out;
 }
+*/
 
-char *decrypt_message(unsigned char *_message) {
-    AES_KEY decrypt_key;
-    AES_set_decrypt_key((unsigned char *)"xfindr00", 128, &decrypt_key);
-    AES_decrypt((unsigned char *)_message, (unsigned char *)_message, &decrypt_key);
+int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_data_len, int _file_data_len_original, int _sock, int _name_len) {
+    char padding = (AES_BLOCK_SIZE - _file_data_len_original % AES_BLOCK_SIZE) % AES_BLOCK_SIZE;
 
-    printf("decrypted string: %s\n", _message);
-    return (char *)_message;
-}
-
-int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_data_len, int _sock, int _id, int _name_len) {
     // create and intialize ICMP packet header
     struct icmp icmp_hdr;
     icmp_hdr.icmp_type = ICMP_ECHO;
     icmp_hdr.icmp_code = 0;
     icmp_hdr.icmp_cksum = 0;
-    icmp_hdr.icmp_id = _id;
+    icmp_hdr.icmp_id = _file_data_len_original;
     icmp_hdr.icmp_seq = _name_len;
 
+    cout << "original file data len: " << _file_data_len_original << endl;
+    cout << "padded original len: " << _file_data_len_original + padding << endl;
+    cout << "padding: " << (int)padding << endl;
     // concat data to ICMP header
     u_int8_t icmpBuffer[1500];
     u_int8_t *icmpData = icmpBuffer + 8;
 
     // set ICMP header and set data after header
     memcpy(icmpBuffer, &icmp_hdr, 8);
-    memcpy(icmpData, _file_data, _file_data_len);
+    memcpy(icmpData, _file_data, _file_data_len + padding);
 
     // calculate new checksum with appended data and set new header
     icmp_hdr.icmp_cksum = icmp_cksum((uint16_t *)icmpBuffer, 8 + _file_data_len);
@@ -376,69 +425,59 @@ int main(int argc, char **argv) {
             return false;
         }
 
-        stringstream encrypteddd;
-        stringstream decrypteddd;
-        int counter = 0;
+        // send file data
 
-        while (counter * 16 < file_data.str().length()) {
-            unsigned char *file_data_encrypted;
-            file_data_encrypted = encrypt_message(file_data.str().substr(counter * 16, 16), (file_data.str().substr(counter * 16, 16)).length());
-            encrypteddd << file_data_encrypted;
-            decrypt_message(file_data_encrypted);
-            counter++;
+        if (DEBUG) {
+            cout << "File size greater than one packet" << endl;
+            cout << file_data.str().length() << endl;
         }
-        counter = 0;
+        int tmp_size = 1392 - R_opt.length() - 1;
+        int tmp_start = 0;
+        int data_len = file_data.str().length();
 
-        while (counter * 16 < encrypteddd.str().length()) {
-            string tp = encrypteddd.str().substr(counter * 16, 16);
-            unsigned char *val = new unsigned char[tp.length() + 1];
-            strcpy((char *)val, tp.c_str());
-            cout << decrypt_message(val) << endl;
-            counter++;
-        }
+        while (tmp_start < data_len) {
+            if ((tmp_start + 1392) > data_len) {
+                tmp_size = data_len - tmp_start;
+                cout << "start: " << tmp_start << endl
+                     << "size: " << tmp_size << endl
+                     << endl;
 
-        // send file name
-        if (send_custom_icmp_packet(server_info, (char *)R_opt.c_str(), R_opt.length(), sock, 69, 0)) {
-            cerr << "failed" << endl;
+                string tmp = R_opt + file_data.str().substr(tmp_start, tmp_size);
+                char prepared_data[1392];
+                memset(prepared_data, 0, 1392);
+                memcpy(prepared_data, tmp.c_str(), tmp.length());
+                int padded_prepared_data_size = tmp.length() + (AES_BLOCK_SIZE - tmp.length() % AES_BLOCK_SIZE) % AES_BLOCK_SIZE;
+
+                if (send_custom_icmp_packet(server_info, encrypt_message(prepared_data, tmp.length()), padded_prepared_data_size, tmp.length(), sock, R_opt.length())) {
+                    cerr << "failed" << endl;
+                }
+                break;
+            } else {
+                cout << "start: " << tmp_start << endl
+                     << "size: " << tmp_size << endl
+                     << endl;
+
+                string tmp = R_opt + file_data.str().substr(tmp_start, tmp_size);
+                char prepared_data[1392];
+                memset(prepared_data, 0, 1392);
+                memcpy(prepared_data, tmp.c_str(), tmp.length());
+                int padded_prepared_data_size = tmp.length() + (AES_BLOCK_SIZE - tmp.length() % AES_BLOCK_SIZE) % AES_BLOCK_SIZE;
+                cout << padded_prepared_data_size << endl;
+
+                if (send_custom_icmp_packet(server_info, encrypt_message(prepared_data, tmp.length()), padded_prepared_data_size, tmp.length(), sock, R_opt.length())) {
+                    cerr << "failed" << endl;
+                }
+                tmp_start += tmp_size;
+            }
         }
 
         /*
-        // send packet data
-        if (file_data.str().length() > 1500) {
-            if (DEBUG) {
-                cout << "File size greater than one packet" << endl;
-                cout << file_data.str().length() << endl;
-            }
-            int tmp_size = 1000;
-            int tmp_start = 0;
-            int data_len = file_data.str().length();
-            while (tmp_start < data_len) {
-                if ((tmp_start + 1000) > data_len) {
-                    tmp_size = data_len - tmp_start;
-                    cout << "start: " << tmp_start << endl
-                         << "size: " << tmp_size << endl
-                         << endl;
-                    string tmp = R_opt + file_data.str().substr(tmp_start, tmp_size);
-                    if (send_custom_icmp_packet(server_info, (char *)tmp.c_str(), tmp.length(), sock, 71, R_opt.length())) {
-                        cerr << "failed" << endl;
-                    }
-                    break;
-                } else {
-                    cout << "start: " << tmp_start << endl
-                         << "size: " << tmp_size << endl
-                         << endl;
-                    string tmp = R_opt + file_data.str().substr(tmp_start, tmp_size);
-                    if (send_custom_icmp_packet(server_info, (char *)tmp.c_str(), tmp.length(), sock, 71, R_opt.length())) {
-                        cerr << "failed" << endl;
-                    }
-                    tmp_start += tmp_size;
-                }
-            }
-        } else {
-            if (send_custom_icmp_packet(server_info, (char *)file_data.str().c_str(), file_data_len, sock, 71, R_opt.length())) {
-                cerr << "failed" << endl;
-            }
-        }*/
+        string tmp = "michal findra";
+        char *tmpp;
+        tmpp = encrypt_message((char *)tmp.c_str(), tmp.length());
+        tmpp = decrypt_message(tmpp, sizeof(tmpp));
+        printf("%s\n", tmpp);
+        */
 
         if (DEBUG) {
             cout << "R_opt = " << R_opt << endl;
