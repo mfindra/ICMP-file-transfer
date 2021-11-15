@@ -3,13 +3,6 @@ author: Michal Findra, xfindr00
 project: ISA 
 description: File transfer using encrypted ICMP packets.
 */
-#include <openssl/aes.h>
-#include <unistd.h>
-
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-#include <string>
 
 // network libs
 #include <arpa/inet.h>
@@ -22,18 +15,21 @@ description: File transfer using encrypted ICMP packets.
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <netinet/ip_icmp.h>
-#include <netinet/tcp.h>
-#include <netinet/udp.h>
 #include <pcap.h>
+#include <pcap/sll.h>
 
 // other libs
 #include <getopt.h>
+#include <openssl/aes.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
-#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <sstream>
-#include <vector>
+#include <string>
 
 #define PACKET_SIZE 1400
 #define DEBUG 0
@@ -102,8 +98,8 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
     string packet_data;
 
     // get packet type from header
-    ether_header *eth_header = (ether_header *)packet;
-    u_short ethertype = ntohs(eth_header->ether_type);
+    struct sll_header *eth_header = (struct sll_header *)packet;
+    u_short ethertype = ntohs(eth_header->sll_protocol);
 
     // process ether type
     switch (ethertype) {
@@ -111,11 +107,11 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
         case ETHERTYPE_IP: {
             // get packet header
             const struct iphdr *ip_header =
-                (struct iphdr *)(packet + sizeof(struct ethhdr));
+                (struct iphdr *)((char *)eth_header + SLL_HDR_LEN);
 
             // get icmpv4 header
             const struct icmphdr *icmp_header =
-                (struct icmphdr *)(packet + sizeof(struct ethhdr) + sizeof(struct iphdr));
+                (struct icmphdr *)((char *)ip_header + (ip_header->ihl * 4));
 
             // get icmp packet id (padding and identification)
             packet_id = icmp_header->un.echo.id;
@@ -130,11 +126,11 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
                         break;
 
                     // get data length from packet header
-                    int icmp_data_len = pkthdr->caplen - (ETH_HLEN + (ip_header->ihl * 4) + sizeof(struct icmphdr));
+                    int icmp_data_len = pkthdr->caplen - (SLL_HDR_LEN + (ip_header->ihl * 4) + sizeof(struct icmphdr));
 
                     // get and decrypt file name and packet data merged in one string
                     unsigned char *packed_data_merged;
-                    packed_data_merged = (unsigned char *)decrypt_message((char *)packet + ETH_HLEN + (ip_header->ihl << 2) + sizeof(struct icmphdr), icmp_data_len);
+                    packed_data_merged = (unsigned char *)decrypt_message((char *)icmp_header + sizeof(struct icmphdr), icmp_data_len);
 
                     // shift bytes in packet_id to get padding (stored in top 1B in packet_id)
                     packet_id = packet_id >> 12;
@@ -167,7 +163,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
         }
         case ETHERTYPE_IPV6: {
             // get packet header
-            struct ip6_hdr *ip6_header = (struct ip6_hdr *)(packet + ETH_HLEN);
+            struct ip6_hdr *ip6_header = (struct ip6_hdr *)((char *)eth_header + SLL_HDR_LEN);
 
             // get protocol from header for icmpv6 identifiaction
             auto protocol = ip6_header->ip6_ctlun.ip6_un1.ip6_un1_nxt;
@@ -175,21 +171,21 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
             switch (protocol) {
                 case IPPROTO_ICMPV6: {
                     // get icmpv6 header
-                    struct icmp6_hdr *icmp_header = (struct icmp6_hdr *)(packet + ETH_HLEN + 40);
+                    struct icmp6_hdr *icmp_header = (struct icmp6_hdr *)((char *)ip6_header + 40);
 
                     // check if packet has valid identifier (stored in bottom 3B in packet_id)
                     if ((icmp_header->icmp6_dataun.icmp6_un_data16[0] & 0x0fff) != ICMP_PACKET_ID)
                         break;
 
                     // get data length from packet header
-                    int icmpDataLength = pkthdr->caplen - (ETH_HLEN + 40 + sizeof(struct icmphdr));
+                    int icmpDataLength = pkthdr->caplen - (SLL_HDR_LEN + sizeof(struct icmphdr) + 40);
 
                     // get file name length from icmp packet sequence
                     file_name_len = icmp_header->icmp6_dataun.icmp6_un_data16[1];
 
                     // get and decrypt file name and packet data merged in one string
                     unsigned char *packet_data_merged;
-                    packet_data_merged = (unsigned char *)decrypt_message((char *)packet + ETH_HLEN + 40 + sizeof(struct icmphdr), icmpDataLength);
+                    packet_data_merged = (unsigned char *)decrypt_message((char *)icmp_header + sizeof(struct icmphdr), icmpDataLength);
 
                     // shift bytes in packet_id to get padding (stored in top 1B in packet_id)
                     packet_id = ((icmp_header->icmp6_dataun.icmp6_un_data16[0]) >> 12);
@@ -353,7 +349,7 @@ int main(int argc, char **argv) {
         // get and set network interface address and mask
         pcap_t *handler;
         struct bpf_program fp;
-        string interface = "enp0s3";
+        string interface = "any";
         bpf_u_int32 maskp;
         bpf_u_int32 netp;
         pcap_lookupnet(interface.c_str(), &netp, &maskp, errbuf);
@@ -491,7 +487,7 @@ int main(int argc, char **argv) {
             file_data.read(prepared_data + R_opt.length(), PACKET_DATA_SIZE - R_opt.length());
 
             // send packet of full packet data size
-            if ((PACKET_DATA_SIZE - R_opt.length() + 1) < file_data_len) {
+            if ((PACKET_DATA_SIZE - (int)R_opt.length() + 1) < file_data_len) {
                 if (send_custom_icmp_packet(server_info, encrypt_message(prepared_data, PACKET_DATA_SIZE), PACKET_DATA_SIZE, PACKET_DATA_SIZE, ipv6_packet, sock, R_opt.length())) {
                     cerr << "failed" << endl;
                 }
@@ -500,13 +496,16 @@ int main(int argc, char **argv) {
             } else {  // send packet of remaining size
                 int tmp_file_data_len = (file_data_len + R_opt.length());
                 int padded_prepared_data_size = tmp_file_data_len + (AES_BLOCK_SIZE - tmp_file_data_len % AES_BLOCK_SIZE) % AES_BLOCK_SIZE;
-                cout << padded_prepared_data_size << endl;
 
                 if (send_custom_icmp_packet(server_info, encrypt_message(prepared_data, padded_prepared_data_size), padded_prepared_data_size, tmp_file_data_len, ipv6_packet, sock, R_opt.length())) {
                     cerr << "failed" << endl;
                 }
-                cout << "<==========>" << endl
-                     << endl;
+
+                if (DEBUG) {
+                    cout << padded_prepared_data_size << endl;
+                    cout << "<==========>" << endl
+                         << endl;
+                }
 
                 file_data_len -= PACKET_DATA_SIZE;
             }
