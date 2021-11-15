@@ -1,5 +1,5 @@
 /*
-autor: Michal Findra, xfindr00
+author: Michal Findra, xfindr00
 project: ISA 
 description: File transfer using encrypted ICMP packets.
 */
@@ -36,8 +36,9 @@ description: File transfer using encrypted ICMP packets.
 #include <vector>
 
 #define PACKET_SIZE 1400
-#define DEBUG 1
+#define DEBUG 0
 #define KEY_LENGTH 128
+#define PACKET_DATA_SIZE 1360
 #define FILTER_STRING "icmp[icmptype] = icmp-echo or icmp6[icmp6type] = icmp6-echo"
 #define ICMP_PACKET_ID 0x0abc
 
@@ -67,13 +68,15 @@ char *decrypt_message(char *_message, int _message_len) {
     // setup decryption key
     AES_KEY decrypt_key;
     AES_set_decrypt_key((const unsigned char *)"xfindr00", KEY_LENGTH, &decrypt_key);
-    unsigned char *output = (unsigned char *)calloc(_message_len, 1);
 
+    // set output of decryption
+    unsigned char *decryption_output = (unsigned char *)calloc(_message_len, 1);
+
+    // decrypt data in 16B blocks
     for (int i = 0; i < _message_len; i += 16) {
-        AES_decrypt((const unsigned char *)_message + i, output + i, &decrypt_key);
+        AES_decrypt((const unsigned char *)_message + i, decryption_output + i, &decrypt_key);
     }
-
-    return (char *)output;
+    return (char *)decryption_output;
 }
 
 // encrypt _message of size _message_len using AES cypher with 128 bit key length
@@ -82,28 +85,25 @@ char *encrypt_message(char *_message, int _message_len) {
     AES_KEY encrypt_key;
     AES_set_encrypt_key((const unsigned char *)"xfindr00", KEY_LENGTH, &encrypt_key);
 
-    unsigned char *output = (unsigned char *)calloc(_message_len, 1);
+    // set output of encryption
+    unsigned char *encryption_output = (unsigned char *)calloc(_message_len, 1);
 
+    // encrpyt data in 16B blocks
     for (int i = 0; i < _message_len; i += 16) {
-        AES_encrypt((const unsigned char *)_message + i, output + i, &encrypt_key);
+        AES_encrypt((const unsigned char *)_message + i, encryption_output + i, &encrypt_key);
     }
-
-    return (char *)output;
+    return (char *)encryption_output;
 }
 
+// handling function for capturing packets
 void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
-    // initialize variable for output print
-    stringstream ss;
-
-    const u_char *packet_totlen = packet + ETH_HLEN;
-    ether_header *eth_header = (ether_header *)packet;
-    u_short ethertype = ntohs(eth_header->ether_type);
-
     int packet_id = 0;
     int file_name_len = 0;
     string packet_data;
 
-    int ll;
+    // get packet type from header
+    ether_header *eth_header = (ether_header *)packet;
+    u_short ethertype = ntohs(eth_header->ether_type);
 
     // process ether type
     switch (ethertype) {
@@ -112,91 +112,117 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
             // get packet header
             const struct iphdr *ip_header =
                 (struct iphdr *)(packet + sizeof(struct ethhdr));
-            ll = ip_header->ihl << 2;
 
+            // get icmpv4 header
             const struct icmphdr *icmp_header =
                 (struct icmphdr *)(packet + sizeof(struct ethhdr) + sizeof(struct iphdr));
 
-            if (DEBUG) {
-                cout << "file name length is: " << icmp_header->un.echo.sequence << endl
-                     << endl;
-            }
+            // get icmp packet id (padding and identification)
             packet_id = icmp_header->un.echo.id;
+
+            // get icmp packet sequence (file name length)
             file_name_len = icmp_header->un.echo.sequence;
 
             switch (ip_header->protocol) {
                 case IPPROTO_ICMP: {
-                    if ((packet_id & 0x0fff) != ICMP_PACKET_ID) {
+                    // check if packet has valid identifier (stored in bottom 3B in packet_id)
+                    if ((packet_id & 0x0fff) != ICMP_PACKET_ID)
                         break;
-                    }
-                    // print length of recieved packet
-                    cout << " length " << pkthdr->len << " bytes" << endl;
 
-                    u_int icmpDataLength = pkthdr->caplen - (ETH_HLEN + (ip_header->ihl * 4) + sizeof(struct icmphdr));
-                    unsigned char *tmpp;
-                    tmpp = (unsigned char *)decrypt_message((char *)packet + ETH_HLEN + ll + sizeof(struct icmphdr), icmpDataLength);
+                    // get data length from packet header
+                    int icmp_data_len = pkthdr->caplen - (ETH_HLEN + (ip_header->ihl * 4) + sizeof(struct icmphdr));
 
-                    cout << "packet id: " << packet_id << endl;
-                    cout << "packet data size: " << packet_data.length() << endl;
+                    // get and decrypt file name and packet data merged in one string
+                    unsigned char *packed_data_merged;
+                    packed_data_merged = (unsigned char *)decrypt_message((char *)packet + ETH_HLEN + (ip_header->ihl << 2) + sizeof(struct icmphdr), icmp_data_len);
+
+                    // shift bytes in packet_id to get padding (stored in top 1B in packet_id)
                     packet_id = packet_id >> 12;
-                    cout << "id is: " << packet_id << endl;
-                    //printf("%s\n", tmpp);
 
-                    string file_name_tmp((char *)tmpp);
-                    file_name_tmp = file_name_tmp.substr(0, file_name_len);
+                    // separete file name from merged string
+                    string file_name((char *)packed_data_merged);
+                    file_name = file_name.substr(0, file_name_len);
 
-                    if (1) {
-                        cout << "file name: " << file_name_tmp << endl;
+                    if (DEBUG) {
+                        cout << " length " << pkthdr->len << " bytes" << endl;
+                        cout << "packet data size: " << packet_data.length() << endl;
+                        cout << "id is: " << packet_id << endl;
+                        //printf("%s\n", packed_data_merged);
+                        cout << "file name: " << file_name << endl;
                     }
 
+                    // open file for output and write data into file
                     ofstream outfile;
-                    outfile.open(file_name_tmp.append(".out"), std::ios_base::app);  // append instead of overwrite
-                    outfile << string((char *)tmpp + file_name_len, icmpDataLength - file_name_len - packet_id);
+                    outfile.open(file_name, std::ios_base::app);  // append instead of overwrite
+                    outfile << string((char *)packed_data_merged + file_name_len, icmp_data_len - file_name_len - packet_id);
                     outfile.close();
 
                     break;
                 }
                 default:
-                    // filter removes other types
+                    // filter out other types
                     break;
             }
             break;
         }
         case ETHERTYPE_IPV6: {
+            // get packet header
             struct ip6_hdr *ip6_header = (struct ip6_hdr *)(packet + ETH_HLEN);
+
+            // get protocol from header for icmpv6 identifiaction
             auto protocol = ip6_header->ip6_ctlun.ip6_un1.ip6_un1_nxt;
+
             switch (protocol) {
                 case IPPROTO_ICMPV6: {
+                    // get icmpv6 header
                     struct icmp6_hdr *icmp_header = (struct icmp6_hdr *)(packet + ETH_HLEN + 40);
-                    cout << " length " << pkthdr->len << " bytes" << endl;
-                    u_int icmpDataLength = pkthdr->caplen - (ETH_HLEN + 40 + sizeof(struct icmphdr));
+
+                    // check if packet has valid identifier (stored in bottom 3B in packet_id)
+                    if ((icmp_header->icmp6_dataun.icmp6_un_data16[0] & 0x0fff) != ICMP_PACKET_ID)
+                        break;
+
+                    // get data length from packet header
+                    int icmpDataLength = pkthdr->caplen - (ETH_HLEN + 40 + sizeof(struct icmphdr));
+
+                    // get file name length from icmp packet sequence
                     file_name_len = icmp_header->icmp6_dataun.icmp6_un_data16[1];
 
-                    if ((icmp_header->icmp6_dataun.icmp6_un_data16[0] & 0x0fff) != ICMP_PACKET_ID) {
-                        break;
+                    // get and decrypt file name and packet data merged in one string
+                    unsigned char *packet_data_merged;
+                    packet_data_merged = (unsigned char *)decrypt_message((char *)packet + ETH_HLEN + 40 + sizeof(struct icmphdr), icmpDataLength);
+
+                    // shift bytes in packet_id to get padding (stored in top 1B in packet_id)
+                    packet_id = ((icmp_header->icmp6_dataun.icmp6_un_data16[0]) >> 12);
+
+                    // separete file name from merged string
+                    string file_name((char *)packet_data_merged);
+                    file_name = file_name.substr(0, file_name_len);
+
+                    if (DEBUG) {
+                        cout << " length " << pkthdr->len << " bytes" << endl;
+                        cout << "packet id: " << packet_id << endl;
+                        cout << "packet data size: " << icmpDataLength << endl;
+                        //printf("%s\n", packet_data_merged);
+                        cout << "file name: " << file_name << endl;
                     }
 
-                    unsigned char *tmpp;
-                    tmpp = (unsigned char *)decrypt_message((char *)packet + ETH_HLEN + 40 + sizeof(struct icmphdr), icmpDataLength);
-                    packet_id = ((icmp_header->icmp6_dataun.icmp6_un_data16[0]) >> 12);
-                    cout << "packet id: " << packet_id << endl;
-                    cout << "packet data size: " << icmpDataLength << endl;
-                    //printf("%s\n", tmpp);
-
-                    string file_name_tmp((char *)tmpp);
-                    file_name_tmp = file_name_tmp.substr(0, file_name_len);
-
+                    // open file for output and write data into file
                     ofstream outfile;
-                    outfile.open(file_name_tmp.append(".out"), std::ios_base::app);  // append instead of overwrite
-                    outfile << string((char *)tmpp + file_name_len, icmpDataLength - file_name_len - packet_id);
+                    outfile.open(file_name, std::ios_base::app);  // append instead of overwrite
+                    outfile << string((char *)packet_data_merged + file_name_len, icmpDataLength - file_name_len - packet_id);
                     outfile.close();
 
                     break;
                 }
                 default: {
+                    // filter out other types
                     break;
                 }
             }
+            break;
+        }
+        default: {
+            // filter out other types
             break;
         }
     }
@@ -207,22 +233,22 @@ void *get_in_addr(struct sockaddr *sa) {
     if (sa->sa_family == AF_INET) {
         return &(((struct sockaddr_in *)sa)->sin_addr);
     }
-
     return &(((struct sockaddr_in6 *)sa)->sin6_addr);
 }
 
-u_int16_t icmp_cksum(uint16_t *buffer, int length) {
+// calculate packet checksum
+u_int16_t icmp_packet_checksum(uint16_t *buffer, int length) {
     uint32_t sum = 0;
     uint16_t *buf = buffer;
     uint16_t answer = 0;
 
-    // Adding up all 16 bits in sum
+    // sum up all 16 bits in sum
     for (answer = 0; length > 1; length -= 2) {
         sum += *buf;
         buf++;
     }
 
-    // Even length - add last byte
+    // even length - add last byte
     if (length == 1) {
         sum += *(uint16_t *)buf;
     }
@@ -235,41 +261,48 @@ u_int16_t icmp_cksum(uint16_t *buffer, int length) {
     return answer;
 }
 
+// create icmp packet and send it using socket
 int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_data_len, int _file_data_len_original, bool ipv6, int _sock, int _name_len) {
-    char padding = (AES_BLOCK_SIZE - _file_data_len_original % AES_BLOCK_SIZE) % AES_BLOCK_SIZE;
+    // calculate padding needed for data to be in 16B blocks
+    char padding = _file_data_len - _file_data_len_original;
 
     // create and intialize ICMP packet header
     struct icmp icmp_hdr;
     icmp_hdr.icmp_cksum = 0;
-    icmp_hdr.icmp_id = ((0x000 | padding) << 12) | ICMP_PACKET_ID;
+    icmp_hdr.icmp_code = 0;
+
+    // store file name length in icmp packet sequence
     icmp_hdr.icmp_seq = _name_len;
+
+    // store identification in bottom 3B and padding in top 1B in icmp packet ID
+    icmp_hdr.icmp_id = ((0x0000 | padding) << 12) | ICMP_PACKET_ID;
+
+    // set icmp packet type (ipv4 or ipv6)
     if (ipv6)
         icmp_hdr.icmp_type = ICMP6_ECHO_REQUEST;
     else
         icmp_hdr.icmp_type = ICMP_ECHO;
-    icmp_hdr.icmp_code = 0;
 
-    char *tmpp;
-    tmpp = decrypt_message(_file_data, _file_data_len);
-    printf("%s\n", tmpp);
+    if (DEBUG) {
+        cout << "original file data len: " << _file_data_len_original << endl;
+        cout << "padded original len: " << _file_data_len_original + padding << endl;
+        cout << "padding: " << (unsigned int)padding << endl;
+    }
 
-    cout << "original file data len: " << _file_data_len_original << endl;
-    cout << "padded original len: " << _file_data_len_original + padding << endl;
-    cout << "padding: " << (int)padding << endl;
-    // concat data to ICMP header
-    u_int8_t icmpBuffer[1500];
-    u_int8_t *icmpData = icmpBuffer + 8;
+    // concat data after ICMP header
+    u_int8_t icmp_file_data_buffer[1500];
+    u_int8_t *icmp_bytes_data = icmp_file_data_buffer + 8;
 
     // set ICMP header and set data after header
-    memcpy(icmpBuffer, &icmp_hdr, 8);
-    memcpy(icmpData, _file_data, _file_data_len + padding);
+    memcpy(icmp_file_data_buffer, &icmp_hdr, 8);
+    memcpy(icmp_bytes_data, _file_data, _file_data_len + (unsigned int)padding);
 
     // calculate new checksum with appended data and set new header
-    icmp_hdr.icmp_cksum = icmp_cksum((uint16_t *)icmpBuffer, 8 + _file_data_len);
-    memcpy(icmpBuffer, &icmp_hdr, 8);
+    icmp_hdr.icmp_cksum = icmp_packet_checksum((uint16_t *)icmp_file_data_buffer, 8 + _file_data_len);
+    memcpy(icmp_file_data_buffer, &icmp_hdr, 8);
 
     // send ICMP ECHO packet to selected ip address
-    if (sendto(_sock, icmpBuffer, 8 + _file_data_len, 0, (struct sockaddr *)(_server_info->ai_addr), _server_info->ai_addrlen) <= 0) {
+    if (sendto(_sock, icmp_file_data_buffer, 8 + _file_data_len, 0, (struct sockaddr *)(_server_info->ai_addr), _server_info->ai_addrlen) <= 0) {
         cerr << "ERROR - Failed to send packet: " << strerror(errno) << endl;
         return false;
     }
@@ -277,7 +310,7 @@ int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_
     if (DEBUG)
         cout << "Successfully sent echo request" << endl;
 
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 int main(int argc, char **argv) {
@@ -286,6 +319,7 @@ int main(int argc, char **argv) {
     bool L_opt = false;
     int opt;
 
+    // read and parse program arguments
     while ((opt = getopt(argc, argv, "r:s:lh")) != -1) {
         switch (opt) {
             case 'r':
@@ -299,27 +333,29 @@ int main(int argc, char **argv) {
                 break;
             case 'h':
                 PrintHelp();
-                return 0;
+                return EXIT_SUCCESS;
                 break;
             default:
-                fprintf(stderr, "ERROR - Wrong argument!\n");
+                cerr << "ERROR - Wrong argument!" << endl;
                 return EXIT_FAILURE;
         }
     }
 
-    // check if application runs in listen (-l) mode
+    // check if application runs in listener (-l) mode
     if (L_opt) {
-        cout << "Listen mode" << endl;
+        if (DEBUG) {
+            cout << "Listen mode" << endl;
+        }
 
+        // intitialize buffer for error message
         char errbuf[PCAP_ERRBUF_SIZE];
 
-        // get network interface address and mask
+        // get and set network interface address and mask
         pcap_t *handler;
         struct bpf_program fp;
         string interface = "enp0s3";
         bpf_u_int32 maskp;
         bpf_u_int32 netp;
-
         pcap_lookupnet(interface.c_str(), &netp, &maskp, errbuf);
 
         // open device for reading
@@ -349,9 +385,9 @@ int main(int argc, char **argv) {
         pcap_close(handler);
         cout << endl;
 
-        return 0;
+        return EXIT_SUCCESS;
     } else {
-        // check arguments in sender mode
+        // check arguments in server(sending) mode
         if (R_opt.empty()) {
             cerr << "ERROR - Missing file name!" << endl;
             return EXIT_FAILURE;
@@ -365,6 +401,7 @@ int main(int argc, char **argv) {
         stringstream file_data;
         int file_data_len;
 
+        // check if file exists and read fiel data into buffer
         if (f.good()) {
             if (DEBUG)
                 cout << "File exists" << endl;
@@ -383,14 +420,14 @@ int main(int argc, char **argv) {
         int status, protocol;
         char ip_string[INET6_ADDRSTRLEN];
         bool ipv6_packet = false;
-
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
 
+        // get info
         if ((status = getaddrinfo(S_opt.c_str(), NULL, &hints, &server_info)) != 0) {
-            fprintf(stderr, "%s\n", gai_strerror(status));
-            return 1;
+            cout << "ERROR - " << gai_strerror(status) << endl;
+            return EXIT_FAILURE;
         }
 
         // resolve ip address from domain name if necessary
@@ -420,6 +457,7 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
 
+        // set socket options
         if (protocol != IPPROTO_ICMPV6) {
             uint8_t ttl = 255;
             if (setsockopt(sock, SOL_IP, IP_TTL, &ttl, sizeof(ttl)) != 0) {
@@ -428,33 +466,39 @@ int main(int argc, char **argv) {
             }
         }
 
+        // set non-blocking
         if (fcntl(sock, F_SETFL, O_NONBLOCK) != 0) {
             cerr << "ERROR - Failed to set non-blocking" << endl;
             return EXIT_FAILURE;
         }
 
+        // remove file path becouse it can cause overflow
+        int file_name_start = R_opt.find_last_of("\\/");
+        R_opt = R_opt.substr(file_name_start + 1, R_opt.length());
+
         // send file data
         int tmp_size = 1392 - R_opt.length() - 1;
 
-        cout << "<==== starting sending data ====>" << endl
-             << endl;
+        if (DEBUG) {
+            cout << "<==== starting sending data ====>" << endl;
+        }
 
+        // send data in block of size divisible by 16
         while (file_data_len >= 0) {
-            char prepared_data[1392];
-            memset(prepared_data, 0, 1392);
+            char prepared_data[PACKET_DATA_SIZE];
+            memset(prepared_data, 0, PACKET_DATA_SIZE);
             memcpy(prepared_data, R_opt.c_str(), R_opt.length());
-            file_data.read(prepared_data + R_opt.length(), 1392 - R_opt.length());
+            file_data.read(prepared_data + R_opt.length(), PACKET_DATA_SIZE - R_opt.length());
 
-            if ((1392 - R_opt.length() + 1) < file_data_len) {
-                if (send_custom_icmp_packet(server_info, encrypt_message(prepared_data, 1392), 1392, 1392, ipv6_packet, sock, R_opt.length())) {
+            // send packet of full packet data size
+            if ((PACKET_DATA_SIZE - R_opt.length() + 1) < file_data_len) {
+                if (send_custom_icmp_packet(server_info, encrypt_message(prepared_data, PACKET_DATA_SIZE), PACKET_DATA_SIZE, PACKET_DATA_SIZE, ipv6_packet, sock, R_opt.length())) {
                     cerr << "failed" << endl;
                 }
-                file_data_len -= (1392 - R_opt.length());
-                cout << "<==========> greater" << endl;
+                file_data_len -= (PACKET_DATA_SIZE - R_opt.length());
 
-            } else {
+            } else {  // send packet of remaining size
                 int tmp_file_data_len = (file_data_len + R_opt.length());
-
                 int padded_prepared_data_size = tmp_file_data_len + (AES_BLOCK_SIZE - tmp_file_data_len % AES_BLOCK_SIZE) % AES_BLOCK_SIZE;
                 cout << padded_prepared_data_size << endl;
 
@@ -464,7 +508,7 @@ int main(int argc, char **argv) {
                 cout << "<==========>" << endl
                      << endl;
 
-                file_data_len -= 1392;
+                file_data_len -= PACKET_DATA_SIZE;
             }
         }
 
@@ -478,6 +522,3 @@ int main(int argc, char **argv) {
 
     return EXIT_SUCCESS;
 }
-
-// ahoj ahooj ahoooooooooooooooo
-// ahoj ahooj ahoooj
