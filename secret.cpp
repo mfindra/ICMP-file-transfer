@@ -76,7 +76,7 @@ char *decrypt_message(char *_message, int _message_len) {
 
 // encrypt _message of size _message_len using AES cypher with 128 bit key length
 char *encrypt_message(char *_message, int _message_len) {
-    // setup decrytpion key
+    // setup encrytpion key
     AES_KEY encrypt_key;
     AES_set_encrypt_key((const unsigned char *)"xfindr00xfindr00", KEY_LENGTH, &encrypt_key);
 
@@ -272,7 +272,7 @@ int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_
     // send ICMP ECHO packet to selected ip address
     if (sendto(_sock, icmp_file_data_buffer, 12 + _file_data_len, 0, (struct sockaddr *)(_server_info->ai_addr), _server_info->ai_addrlen) <= 0) {
         cerr << "ERROR - Failed to send packet: " << strerror(errno) << endl;
-        return false;
+        return EXIT_FAILURE;
     }
 
     return EXIT_SUCCESS;
