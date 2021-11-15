@@ -8,7 +8,6 @@ all:
 
 clean:
 	rm $(NAME)
-	rm *.out
 
 pack: 
 	tar -cf $(AUTHOR).tar manual.pdf secret.cpp makefile secret.1

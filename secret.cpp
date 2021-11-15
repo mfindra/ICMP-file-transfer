@@ -126,7 +126,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
 
                     // get and decrypt file name and packet data merged in one string
                     unsigned char *packed_data_merged;
-                    packed_data_merged = (unsigned char *)decrypt_message(4 + (char *)icmp_header + sizeof(struct icmphdr), icmp_data_len);
+                    packed_data_merged = (unsigned char *)decrypt_message((char *)icmp_header + 4 + sizeof(struct icmphdr), icmp_data_len);
 
                     // separete file name from merged string
                     string file_name((char *)packed_data_merged);
@@ -158,22 +158,22 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
                     // get icmpv6 header
                     struct icmp6_hdr *icmp_header = (struct icmp6_hdr *)((char *)ip6_header + 40);
 
-                    // check if packet has valid identifier (stored in bottom 3B in packet_id)
-                    if ((icmp_header->icmp6_dataun.icmp6_un_data16[0] & 0x0fff) != ICMP_PACKET_ID)
+                    // get data info
+                    int32_t data_info = *((int32_t *)(((char *)icmp_header) + sizeof(struct icmp6_hdr)));
+
+                    // check if packet has valid identifier
+                    if ((data_info & 0xffff0000) >> 16 != ICMP_PACKET_ID)
                         break;
 
-                    // get data length from packet header
-                    int icmpDataLength = pkthdr->caplen - (SLL_HDR_LEN + sizeof(struct icmphdr) + 40);
+                    file_name_len = (data_info & 0x0000ff00) >> 8;
+                    padding = (data_info & 0x000000ff);
 
-                    // get file name length from icmp packet sequence
-                    file_name_len = icmp_header->icmp6_dataun.icmp6_un_data16[1];
+                    // get data length from packet header
+                    int icmpDataLength = pkthdr->caplen - (4 + SLL_HDR_LEN + sizeof(struct icmphdr) + 40);
 
                     // get and decrypt file name and packet data merged in one string
                     unsigned char *packet_data_merged;
-                    packet_data_merged = (unsigned char *)decrypt_message((char *)icmp_header + sizeof(struct icmphdr), icmpDataLength);
-
-                    // shift bytes in packet_id to get padding (stored in top 1B in packet_id)
-                    padding = ((icmp_header->icmp6_dataun.icmp6_un_data16[0]) >> 12);
+                    packet_data_merged = (unsigned char *)decrypt_message(4 + (char *)icmp_header + sizeof(struct icmphdr), icmpDataLength);
 
                     // separete file name from merged string
                     string file_name((char *)packet_data_merged);
@@ -245,16 +245,10 @@ int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_
     icmp_hdr.icmp_cksum = 0;
     icmp_hdr.icmp_code = 0;
     icmp_hdr.icmp_seq = 0;
+    icmp_hdr.icmp_id = 0;
 
-    // store identification in bottom 3B and padding in top 1B in icmp packet ID
-    icmp_hdr.icmp_id = (((0x0000 | padding) << 12) | _name_len << 8) | ICMP_PACKET_ID;
-
+    // store identification file name length and padding into 32bit
     u_int32_t data_info = (ICMP_PACKET_ID << 16) | (_name_len << 8) | (padding);
-
-    cout << ((data_info & 0xffff0000) >> 16) << endl;
-    cout << ((data_info & 0x0000ff00) >> 8) << endl;
-    cout << ((data_info & 0x000000ff)) << endl;
-    cout << sizeof(data_info);
 
     // set icmp packet type (ipv4 or ipv6)
     if (ipv6)
