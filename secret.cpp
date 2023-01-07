@@ -55,7 +55,7 @@ void PrintHelp() {
          << endl;
     cout << "Sending file \"example_file.txt\" to address 192.168.0.1 :" << endl;
     cout << "       server: sudo ./secret -r example_file.txt -s 192.168.0.1" << endl
-         << "       reciever: sudo ./secret - l" << endl;
+         << "       receiver: sudo ./secret - l" << endl;
 }
 
 // decrypt _message of size _message_len using AES cypher with 128 bit key length
