@@ -28,16 +28,29 @@ Arguments:
 ```
 ## Usage
 
-Build binary file using makefile.
+### Build
 
-`make`
+Compile binary file using makefile.
 
-After all files are transferred, receiver needs to stop receiving using Ctrl+C (SIGINT). 
+    make
 
-Sending file example_file.txt to address 192.168.0.1 : <br>
-       **server:** sudo ./secret -r example_file.txt -s 192.168.0.1 <br>
-       **receiver:** sudo ./secret - l <br>
+### Receiver
 
+After all files are transferred, receiver needs to stop receiving using Ctrl+C (SIGINT)!
+
+Receiving file example_file.txt from address 192.168.0.1
+
+    sudo ./secret - l 
+
+### Sender 
+
+Sending file example_file.txt to address 192.168.0.1
+
+    sudo ./secret -r example_file.txt -s 192.168.0.1
+
+After file is sent, program ends. 
+
+## Note
 
 More info about this implementation available in *manual.pdf* in czech language. 
 

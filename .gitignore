@@ -1,6 +1,8 @@
 .vscode/
 secret
 main.cpp
+test/
+test.py
 
 # Local History for Visual Studio Code
 .history/
