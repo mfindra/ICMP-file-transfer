@@ -240,7 +240,7 @@ int send_custom_icmp_packet(addrinfo *_server_info, char *_file_data, int _file_
     char padding = _file_data_len - _file_data_len_original;
     char tmp = _name_len - 0;
 
-    // create and intialize ICMP packet header
+    // create and initialize ICMP packet header
     struct icmp icmp_hdr;
     icmp_hdr.icmp_cksum = 0;
     icmp_hdr.icmp_code = 0;
