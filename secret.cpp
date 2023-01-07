@@ -43,7 +43,7 @@ void PrintHelp() {
     cout << "FILE TRANSFER USING ENCRYPTED ICMP PACKETS - ISA PROJECT 2021" << endl;
     cout << "======================================================" << endl
          << endl;
-    cout << "Descrition: Transfering file from client to client using ICMP or ICMPv6 packets." << endl
+    cout << "Description: Transferring file from client to client using ICMP or ICMPv6 packets." << endl
          << "If file is greater than packet size, file is divided into more packets." << endl;
     cout << "Arguments: -r               : file to transfer " << endl;
     cout << "           -s <IP|Hostname> : destination IP address or hostname " << endl;
@@ -76,14 +76,14 @@ char *decrypt_message(char *_message, int _message_len) {
 
 // encrypt _message of size _message_len using AES cypher with 128 bit key length
 char *encrypt_message(char *_message, int _message_len) {
-    // setup encrytpion key
+    // setup encryption key
     AES_KEY encrypt_key;
     AES_set_encrypt_key((const unsigned char *)"xfindr00xfindr00", KEY_LENGTH, &encrypt_key);
 
     // set output of encryption
     unsigned char *encryption_output = (unsigned char *)calloc(_message_len, 1);
 
-    // encrpyt data in 16B blocks
+    // encrypt data in 16B blocks
     for (int i = 0; i < _message_len; i += 16) {
         AES_encrypt((const unsigned char *)_message + i, encryption_output + i, &encrypt_key);
     }
@@ -128,7 +128,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
                     unsigned char *packed_data_merged;
                     packed_data_merged = (unsigned char *)decrypt_message((char *)icmp_header + 4 + sizeof(struct icmphdr), icmp_data_len);
 
-                    // separete file name from merged string
+                    // separate file name from merged string
                     string file_name((char *)packed_data_merged);
                     file_name = file_name.substr(0, file_name_len);
 
@@ -150,7 +150,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
             // get packet header
             struct ip6_hdr *ip6_header = (struct ip6_hdr *)((char *)eth_header + SLL_HDR_LEN);
 
-            // get protocol from header for icmpv6 identifiaction
+            // get protocol from header for icmpv6 identification
             auto protocol = ip6_header->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 
             switch (protocol) {
@@ -175,7 +175,7 @@ void callback_handler(u_char *arg, const struct pcap_pkthdr *pkthdr, const u_cha
                     unsigned char *packet_data_merged;
                     packet_data_merged = (unsigned char *)decrypt_message(4 + (char *)icmp_header + sizeof(struct icmphdr), icmpDataLength);
 
-                    // separete file name from merged string
+                    // separate file name from merged string
                     string file_name((char *)packet_data_merged);
                     file_name = file_name.substr(0, file_name_len);
 
@@ -308,7 +308,7 @@ int main(int argc, char **argv) {
 
     // check if application runs in listener (-l) mode
     if (L_opt) {
-        // intitialize buffer for error message
+        // initialize buffer for error message
         char errbuf[PCAP_ERRBUF_SIZE];
 
         // get and set network interface address and mask
@@ -360,7 +360,7 @@ int main(int argc, char **argv) {
         stringstream file_data;
         int file_data_len;
 
-        // check if file exists and read fiel data into buffer
+        // check if file exists and read file data into buffer
         if (f.good()) {
             file_data << f.rdbuf();
             file_data_len = file_data.tellp();
@@ -370,7 +370,7 @@ int main(int argc, char **argv) {
         }
         f.close();
 
-        // set sender and reciever info
+        // set sender and receiver info
         struct addrinfo hints, *server_info;
         int status, protocol;
         char ip_string[INET6_ADDRSTRLEN];
@@ -423,7 +423,7 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
 
-        // remove file path becouse it can cause overflow
+        // remove file path because it can cause overflow
         int file_name_start = R_opt.find_last_of("\\/");
         R_opt = R_opt.substr(file_name_start + 1, R_opt.length());
 
